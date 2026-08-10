@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-부서별_경비_2601.xlsx를 읽어 부서별 합계와 전체 합계를 계산한다.
+부서별_경비_YYMM.xlsx를 읽어 부서별 합계와 전체 합계를 계산한다.
 (01_read_table.py + 02_sum.py를 하나로 정리한 버전)
 - 원본 파일은 읽기만 하고 수정하지 않는다.
-- 결과와 검증 결과를 출력/ 에 쓴다.
+- 상세내역/부서별합계/검증결과를 시트로 묶어 출력/{연월}_정리.xlsx 하나로 낸다.
+
+사용법:
+    py scripts/정리.py            # 폴더에서 부서별_경비_*.xlsx 중 가장 최근 파일을 자동 사용
+    py scripts/정리.py 2602       # 부서별_경비_2602.xlsx 지정
+    py scripts/정리.py 부서별_경비_2602.xlsx   # 파일명/경로 직접 지정
 """
 import sys
 from pathlib import Path
@@ -15,13 +20,29 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-INPUT_FILE = BASE_DIR / "부서별_경비_2601.xlsx"
 OUTPUT_DIR = BASE_DIR / "출력"
-OUTPUT_FILE = OUTPUT_DIR / "정리_부서별_합계.xlsx"
-REPORT_FILE = OUTPUT_DIR / "정리_검증결과.txt"
+INPUT_PATTERN = "부서별_경비_*.xlsx"
 
 # 원본에서 소계성 행을 걸러내기 위한 항목 라벨(공백 변형 포함)
 SUBTOTAL_LABELS = {"소계", "소 계", "계", "합계"}
+
+
+def resolve_input_file(arg: str | None) -> Path:
+    """인자로 받은 월 코드/파일명을 실제 원본 파일 경로로 바꾼다.
+    인자가 없으면 폴더에서 부서별_경비_*.xlsx 중 이름순 가장 나중 파일을 사용한다."""
+    if arg:
+        candidate = Path(arg)
+        if candidate.suffix.lower() != ".xlsx":
+            candidate = BASE_DIR / f"부서별_경비_{arg}.xlsx"
+        elif not candidate.is_absolute():
+            candidate = BASE_DIR / candidate
+        return candidate
+
+    candidates = sorted(BASE_DIR.glob(INPUT_PATTERN))
+    if not candidates:
+        print(f"{BASE_DIR}에서 '{INPUT_PATTERN}' 파일을 찾을 수 없습니다.", file=sys.stderr)
+        sys.exit(1)
+    return candidates[-1]
 
 
 def load_raw(path: Path) -> pd.DataFrame:
@@ -110,32 +131,30 @@ def validate(totals: pd.DataFrame, ref_dept_totals: dict, ref_grand_total: int |
 
 
 def main() -> None:
-    if not INPUT_FILE.exists():
-        print(f"원본 파일을 찾을 수 없습니다: {INPUT_FILE}", file=sys.stderr)
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    input_file = resolve_input_file(arg)
+    if not input_file.exists():
+        print(f"원본 파일을 찾을 수 없습니다: {input_file}", file=sys.stderr)
         sys.exit(1)
+
+    # 파일명에서 월 코드(예: 2602)를 뽑아 산출물 파일명에 사용한다.
+    tag = input_file.stem.replace("부서별_경비_", "")
+    output_file = OUTPUT_DIR / f"{tag}_정리.xlsx"
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    raw = load_raw(INPUT_FILE)
+    raw = load_raw(input_file)
     detail, ref_dept_totals, ref_grand_total = split_rows(raw)
     totals = build_totals(detail)
-
-    totals.to_excel(OUTPUT_FILE, index=False)
-
     report_lines = validate(totals, ref_dept_totals, ref_grand_total)
-    REPORT_FILE.write_text("\n".join(report_lines), encoding="utf-8")
+    report_df = pd.DataFrame({"검증 결과": report_lines})
 
-    print(f"[출력] 부서별 합계: {OUTPUT_FILE}")
-    print(f"[출력] 검증 결과: {REPORT_FILE}")
-    print()
-    print("=== 부서별 합계 ===")
-    for _, row in totals.iterrows():
-        print(f"  {row['부서']}: {int(row['합계금액']):,}")
-    print(f"  전체 합계: {int(totals['합계금액'].sum()):,}")
-    print()
-    print("=== 검증 결과 ===")
-    for line in report_lines:
-        print(line)
+    with pd.ExcelWriter(output_file) as writer:
+        detail.to_excel(writer, sheet_name="상세내역", index=False)
+        totals.to_excel(writer, sheet_name="부서별합계", index=False)
+        report_df.to_excel(writer, sheet_name="검증결과", index=False)
+
+    print(f"[출력] {output_file}")
 
 
 if __name__ == "__main__":
